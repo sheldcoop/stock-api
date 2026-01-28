@@ -152,15 +152,47 @@ class ScreenerScraper:
 
             section_title = h3.get_text(strip=True).lower()
 
-            # Find all links in this column
             links = []
-            # Links might be in a ul.list-links or inside other divs
-            for a in col.find_all('a'):
-                href = a.get('href')
-                title = a.get_text(strip=True) or "Document"
-                # Filter out "All" links which often point to external sites/archives and aren't direct docs
+
+            # Helper to add links
+            def add_link(title, href):
                 if href and title.lower() != "all":
                     links.append(DocumentItem(title=title, url=href))
+
+            if "concall" in section_title:
+                # For Concalls, try to get the date from the parent <li> if possible
+                # Structure: <li> Date text <a...>Transcript</a> <a...>PPT</a> </li>
+                for li in col.find_all('li'):
+                    # Get all text in li, but we only want the date part which is usually text node
+                    # This is heuristic.
+                    full_text = li.get_text(" ", strip=True)
+
+                    for a in li.find_all('a'):
+                        href = a.get('href')
+                        a_text = a.get_text(strip=True)
+                        # Attempt to construct a better title: "Date - LinkText"
+                        # Simple approach: remove the link text from full text to find "Date"
+                        # This is fuzzy but better than just "Transcript"
+                        title = f"{full_text} - {a_text}"
+                        # If the link text is just "Transcript" or "PPT", prepend context
+                        # Actually, full_text usually contains "Date Transcript PPT"
+                        # So let's try to just use the full_text if it's short, or generic + date
+
+                        # Better strategy: Get text nodes direct child of li
+                        date_text = "".join([t for t in li.contents if isinstance(t, str)]).strip()
+                        if date_text:
+                            final_title = f"{date_text} - {a_text}"
+                        else:
+                            # Fallback if structure is different
+                            final_title = a_text
+
+                        add_link(final_title, href)
+            else:
+                # Standard parsing for other sections
+                for a in col.find_all('a'):
+                    href = a.get('href')
+                    title = a.get_text(strip=True) or "Document"
+                    add_link(title, href)
 
             if "annual report" in section_title:
                 docs.annual_reports.extend(links)
@@ -197,7 +229,12 @@ class ScreenerScraper:
 
         # Extract About
         about = ""
-        about_div = soup.find('div', class_='company-profile-about') or soup.find('div', id='company-profile')
+        # Try multiple selectors for robustness
+        about_div = (
+            soup.find('div', class_='company-profile-about') or
+            soup.find('div', id='company-profile') or
+            soup.find('div', class_='about')
+        )
         if about_div:
             # Usually parsing the text inside p
              about = about_div.get_text(strip=True)
