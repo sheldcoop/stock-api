@@ -136,42 +136,31 @@ class ScreenerScraper:
     def _parse_documents(self, soup: BeautifulSoup) -> Documents:
         docs = Documents()
 
-        # The documents section usually has class "documents" or inside a container with class "documents"
-        # Often it's a div with class 'documents' containing several lists.
-        doc_section = soup.find('div', class_='documents')
-        if not doc_section:
+        # Locate the main document section by ID
+        doc_section_container = soup.find('section', id='documents')
+        if not doc_section_container:
             return docs
 
-        # Helper to extract links from a specific list
-        def extract_links(container) -> List[DocumentItem]:
-            items = []
-            if not container:
-                return items
+        # Inside the section, there are multiple columns with class 'documents'
+        # e.g., <div class="documents flex-column"> <h3>Title</h3> ... </div>
+        doc_columns = doc_section_container.find_all('div', class_='documents')
 
-            # Usually links are in ul.list-links or similar
-            # Sometimes simpler structure. We look for 'a' tags.
-            links = container.find_all('a')
-            for link in links:
-                href = link.get('href')
-                if href:
-                    title = link.get_text(strip=True) or "Document"
-                    items.append(DocumentItem(title=title, url=href))
-            return items
-
-        # Identify sub-sections by headings
-        # Screener structure:
-        # <div class="documents">
-        #   <div class="sub-column"> <h3>Annual Reports</h3> ... </div>
-        #   ...
-        # </div>
-
-        for sub_col in doc_section.find_all('div', class_='sub-column'):
-            h3 = sub_col.find('h3')
+        for col in doc_columns:
+            h3 = col.find('h3')
             if not h3:
                 continue
 
             section_title = h3.get_text(strip=True).lower()
-            links = extract_links(sub_col)
+
+            # Find all links in this column
+            links = []
+            # Links might be in a ul.list-links or inside other divs
+            for a in col.find_all('a'):
+                href = a.get('href')
+                title = a.get_text(strip=True) or "Document"
+                # Filter out "All" links which often point to external sites/archives and aren't direct docs
+                if href and title.lower() != "all":
+                    links.append(DocumentItem(title=title, url=href))
 
             if "annual report" in section_title:
                 docs.annual_reports.extend(links)
@@ -228,6 +217,7 @@ class ScreenerScraper:
         shareholding = self._extract_table(soup, 'shareholding')
 
         # Peers often have a different structure, but usually ID 'peers'
+        # Note: Peers table is often loaded dynamically via JS, so it might be empty in static HTML.
         peers = self._extract_table(soup, 'peers')
 
         # Documents
