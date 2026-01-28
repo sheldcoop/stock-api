@@ -32,7 +32,7 @@ class TableParsingError(Exception):
     pass
 
 class ScreenerScraper:
-    BASE_URL = "https://www.screener.in/company"
+    BASE_URL = "https://www.screener.in"
 
     def _get_headers(self) -> Dict[str, str]:
         return {
@@ -48,7 +48,7 @@ class ScreenerScraper:
         """
         async with aiohttp.ClientSession() as session:
             # 1. Try Consolidated URL
-            consolidated_url = f"{self.BASE_URL}/{symbol}/consolidated/"
+            consolidated_url = f"{self.BASE_URL}/company/{symbol}/consolidated/"
             logger.info(f"Fetching {consolidated_url}")
             try:
                 async with session.get(consolidated_url, headers=self._get_headers()) as response:
@@ -62,13 +62,37 @@ class ScreenerScraper:
                 logger.error(f"Error fetching consolidated URL: {e}")
 
             # 2. Fallback to Standalone URL
-            standalone_url = f"{self.BASE_URL}/{symbol}/"
+            standalone_url = f"{self.BASE_URL}/company/{symbol}/"
             logger.info(f"Fetching {standalone_url}")
             async with session.get(standalone_url, headers=self._get_headers()) as response:
                 if response.status == 404:
                     raise StockNotFound(f"Stock {symbol} not found")
                 response.raise_for_status()
                 return await response.text()
+
+    async def fetch_peers(self, company_id: str) -> List[Dict[str, Any]]:
+        """
+        Fetches the peers table using the company ID.
+        """
+        if not company_id:
+            return []
+
+        url = f"{self.BASE_URL}/api/company/{company_id}/peers/"
+        logger.info(f"Fetching peers from {url}")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self._get_headers()) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'lxml')
+                        return self._extract_table(soup, None, table_only=True)
+                    else:
+                        logger.warning(f"Failed to fetch peers: {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"Error fetching peers: {e}")
+            return []
 
     def _clean_df(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
@@ -82,12 +106,17 @@ class ScreenerScraper:
         df = df.where(pd.notnull(df), None)
         return df.to_dict(orient='records')
 
-    def _extract_table(self, soup: BeautifulSoup, section_id: str) -> List[Dict[str, Any]]:
-        section = soup.find('section', id=section_id)
-        if not section:
-            return []
+    def _extract_table(self, soup: BeautifulSoup, section_id: Optional[str], table_only: bool = False) -> List[Dict[str, Any]]:
+        if table_only:
+            # If soup is just the table HTML or container
+            target = soup
+        else:
+            section = soup.find('section', id=section_id)
+            if not section:
+                return []
+            target = section
 
-        table = section.find('table')
+        table = target.find('table')
         if not table:
             return []
 
@@ -97,7 +126,7 @@ class ScreenerScraper:
             if df_list:
                 return self._clean_df(df_list[0])
         except Exception as e:
-            logger.error(f"Error parsing table {section_id}: {e}")
+            logger.error(f"Error parsing table {section_id if section_id else 'peers'}: {e}")
 
         return []
 
@@ -138,12 +167,17 @@ class ScreenerScraper:
 
         # Locate the main document section by ID
         doc_section_container = soup.find('section', id='documents')
+
         if not doc_section_container:
-            return docs
+            # Fallback: try finding headers "Annual Reports" etc directly if section id is missing
+            return self._parse_documents_fallback(soup)
 
         # Inside the section, there are multiple columns with class 'documents'
         # e.g., <div class="documents flex-column"> <h3>Title</h3> ... </div>
         doc_columns = doc_section_container.find_all('div', class_='documents')
+        if not doc_columns:
+            # Try finding direct h3 headers inside the section if columns structure changed
+            return self._parse_documents_fallback(doc_section_container)
 
         for col in doc_columns:
             h3 = col.find('h3')
@@ -161,29 +195,17 @@ class ScreenerScraper:
 
             if "concall" in section_title:
                 # For Concalls, try to get the date from the parent <li> if possible
-                # Structure: <li> Date text <a...>Transcript</a> <a...>PPT</a> </li>
                 for li in col.find_all('li'):
-                    # Get all text in li, but we only want the date part which is usually text node
-                    # This is heuristic.
-                    full_text = li.get_text(" ", strip=True)
+                    # Get text nodes direct child of li
+                    date_text = "".join([t for t in li.contents if isinstance(t, str)]).strip()
 
                     for a in li.find_all('a'):
                         href = a.get('href')
                         a_text = a.get_text(strip=True)
-                        # Attempt to construct a better title: "Date - LinkText"
-                        # Simple approach: remove the link text from full text to find "Date"
-                        # This is fuzzy but better than just "Transcript"
-                        title = f"{full_text} - {a_text}"
-                        # If the link text is just "Transcript" or "PPT", prepend context
-                        # Actually, full_text usually contains "Date Transcript PPT"
-                        # So let's try to just use the full_text if it's short, or generic + date
 
-                        # Better strategy: Get text nodes direct child of li
-                        date_text = "".join([t for t in li.contents if isinstance(t, str)]).strip()
                         if date_text:
                             final_title = f"{date_text} - {a_text}"
                         else:
-                            # Fallback if structure is different
                             final_title = a_text
 
                         add_link(final_title, href)
@@ -202,6 +224,36 @@ class ScreenerScraper:
                 docs.concalls.extend(links)
             elif "announcement" in section_title:
                 docs.announcements.extend(links)
+
+        return docs
+
+    def _parse_documents_fallback(self, soup: BeautifulSoup) -> Documents:
+        """
+        Fallback method if the standard structure fails.
+        Searches for specific headers and looks for links in their vicinity.
+        """
+        docs = Documents()
+
+        def find_links_for_header(header_text_part):
+            links = []
+            # Find h3 containing the text
+            header = soup.find(lambda tag: tag.name == 'h3' and header_text_part in tag.get_text(strip=True).lower())
+            if not header:
+                return links
+
+            # Look for ul/links in the parent or siblings
+            container = header.parent
+            for a in container.find_all('a'):
+                href = a.get('href')
+                title = a.get_text(strip=True)
+                if href and title.lower() != 'all':
+                    links.append(DocumentItem(title=title, url=href))
+            return links
+
+        docs.annual_reports = find_links_for_header("annual report")
+        docs.credit_ratings = find_links_for_header("credit rating")
+        docs.concalls = find_links_for_header("concall")
+        docs.announcements = find_links_for_header("announcement")
 
         return docs
 
@@ -237,7 +289,11 @@ class ScreenerScraper:
         )
         if about_div:
             # Usually parsing the text inside p
-             about = about_div.get_text(strip=True)
+            p_tag = about_div.find('p')
+            if p_tag:
+                 about = p_tag.get_text(strip=True)
+            else:
+                 about = about_div.get_text(strip=True)
 
         # Header
         header = self._parse_header(soup)
@@ -253,9 +309,14 @@ class ScreenerScraper:
         ratios = self._extract_table(soup, 'ratios')
         shareholding = self._extract_table(soup, 'shareholding')
 
-        # Peers often have a different structure, but usually ID 'peers'
-        # Note: Peers table is often loaded dynamically via JS, so it might be empty in static HTML.
-        peers = self._extract_table(soup, 'peers')
+        # Peers - Fetch dynamically
+        peers = []
+        # Find company ID
+        # <div data-company-id="1298" id="company-info"></div>
+        company_info = soup.find('div', id='company-info')
+        if company_info and company_info.has_attr('data-company-id'):
+            company_id = company_info['data-company-id']
+            peers = await self.fetch_peers(company_id)
 
         # Documents
         documents = self._parse_documents(soup)

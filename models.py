@@ -71,7 +71,9 @@ class StockData(BaseModel):
                     "cash_flow": [],
                     "ratios": [],
                     "shareholding_pattern": [],
-                    "peers": [],
+                    "peers": [
+                        {"Name": "HDFC Bank", "CMP Rs.": "1700", "P/E": "18.5"}
+                    ],
                     "documents": {
                         "annual_reports": [
                             {"title": "Financial Year 2024", "url": "https://example.com/ar2024.pdf"}
