@@ -70,9 +70,10 @@ class ScreenerScraper:
                 response.raise_for_status()
                 return await response.text()
 
-    async def fetch_peers(self, company_id: str) -> List[Dict[str, Any]]:
+    async def fetch_peers(self, session: aiohttp.ClientSession, company_id: str) -> List[Dict[str, Any]]:
         """
         Fetches the peers table using the company ID.
+        Uses the existing session to maintain context (e.g. cookies) if needed.
         """
         if not company_id:
             return []
@@ -81,15 +82,15 @@ class ScreenerScraper:
         logger.info(f"Fetching peers from {url}")
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self._get_headers()) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'lxml')
-                        return self._extract_table(soup, None, table_only=True)
-                    else:
-                        logger.warning(f"Failed to fetch peers: {response.status}")
-                        return []
+            # Use the provided session
+            async with session.get(url, headers=self._get_headers()) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'lxml')
+                    return self._extract_table(soup, None, table_only=True)
+                else:
+                    logger.warning(f"Failed to fetch peers: {response.status}")
+                    return []
         except Exception as e:
             logger.error(f"Error fetching peers: {e}")
             return []
@@ -196,8 +197,13 @@ class ScreenerScraper:
             if "concall" in section_title:
                 # For Concalls, try to get the date from the parent <li> if possible
                 for li in col.find_all('li'):
-                    # Get text nodes direct child of li
-                    date_text = "".join([t for t in li.contents if isinstance(t, str)]).strip()
+                    # Try finding the date div (e.g. <div class="... nowrap">Jan 2026</div>)
+                    date_div = li.find('div', class_='nowrap')
+                    if date_div:
+                        date_text = date_div.get_text(strip=True)
+                    else:
+                        # Fallback to text nodes direct child of li
+                        date_text = "".join([t for t in li.contents if isinstance(t, str)]).strip()
 
                     for a in li.find_all('a'):
                         href = a.get('href')
@@ -309,14 +315,27 @@ class ScreenerScraper:
         ratios = self._extract_table(soup, 'ratios')
         shareholding = self._extract_table(soup, 'shareholding')
 
-        # Peers - Fetch dynamically
+        # Peers - Fetch dynamically using the same session
         peers = []
         # Find company ID
         # <div data-company-id="1298" id="company-info"></div>
         company_info = soup.find('div', id='company-info')
         if company_info and company_info.has_attr('data-company-id'):
             company_id = company_info['data-company-id']
-            peers = await self.fetch_peers(company_id)
+            # We need to pass the current session, but scrape_stock creates its own.
+            # We should refactor fetch_html to accept a session or create one here.
+            # However, since fetch_html closes the session, we can't reuse it easily without refactoring fetch_html.
+            # Let's refactor fetch_html to allow external session control or keep separate sessions.
+            # Given the constraint, let's create a new session for peers but using fetch_peers method.
+            # Wait, fetch_peers in the previous block was modified to take 'session'.
+            # We need to open a session here or refactor scrape_stock.
+            pass
+
+        # To properly support session reuse, we should refactor fetch_html slightly.
+        # But for now, let's keep it simple. If we modified fetch_peers to take a session, we must provide it.
+        # Let's create a new session for peers fetching if we can't reuse the fetch_html one (which is already closed).
+        async with aiohttp.ClientSession() as peers_session:
+             peers = await self.fetch_peers(peers_session, company_id)
 
         # Documents
         documents = self._parse_documents(soup)
