@@ -40,3 +40,49 @@ class StockData(BaseModel):
     peers: List[Dict[str, Any]] = []
 
     documents: Documents
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "symbol": "HDFCBANK",
+                    "company_name": "HDFC Bank Ltd",
+                    "header": {
+                        "market_cap": "₹ 14,00,000 Cr.",
+                        "current_price": "₹ 1,700",
+                        "high_low": "₹ 1,750 / 1,400",
+                        "stock_pe": "18.5",
+                        "book_value": "₹ 550",
+                        "dividend_yield": "1.10 %",
+                        "roce": "6.5 %",
+                        "roe": "17.0 %",
+                        "face_value": "₹ 1.00"
+                    },
+                    "about": "HDFC Bank Limited is an Indian banking and financial services company...",
+                    "pros": ["Company has delivered good profit growth of 20% CAGR over last 5 years"],
+                    "cons": ["Stock is trading at 3.5 times its book value"],
+                    "quarterly_results": [
+                        {"Sep 2023": "45000", "Dec 2023": "48000"}
+                    ],
+                    "profit_loss": [
+                         {"Mar 2023": "170000", "Mar 2024": "200000"}
+                    ],
+                    "balance_sheet": [],
+                    "cash_flow": [],
+                    "ratios": [],
+                    "shareholding_pattern": [],
+                    "peers": [],
+                    "documents": {
+                        "annual_reports": [
+                            {"title": "Financial Year 2024", "url": "https://example.com/ar2024.pdf"}
+                        ],
+                        "credit_ratings": [],
+                        "concalls": [
+                             {"title": "Jan 2024 - Transcript", "url": "https://example.com/concall.pdf"}
+                        ],
+                        "announcements": []
+                    }
+                }
+            ]
+        }
+    }
